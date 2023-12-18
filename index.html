@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>dem1a-to-3mf</title>
+    <script src="https://www.unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.0/umd/index.js"></script>
+  </head>
+
+  <body>
+    <h1>DEM1A-to-3mf</h1>
+    <input type="file" id="target" />
+    <ul id="message">
+      <li>
+        DEM1A の GML (例: <b>FG-GML-5741-40-22-DEM1A-20230929.xgml</b>) をアップロードしてください
+      </li>
+    </ul>
+    <script>
+      function gml_to_3mf(txt, filename) {
+        console.log(`gml のパースが開始されました`);
+        const gml = new DOMParser().parseFromString(txt, "application/xml");
+        console.log(`gml のパースが終了しました`);
+        const v = ["low", "high", "startPoint", "tupleList"].map((a) => {
+          return gml.getElementsByTagNameNS("http://www.opengis.net/gml/3.2", a).item(0)
+            .textContent;
+        });
+        const [minX, minY] = v[0].split(" ").map((a) => parseInt(a));
+        const [maxX, maxY] = v[1].split(" ").map((a) => parseInt(a));
+        const [startX, startY] = v[2].split(" ").map((a) => parseInt(a));
+        const data = v[3]
+          .trim()
+          .split("\n")
+          .map((a) => {
+            const t = a.split(",");
+            return {
+              type: t[0],
+              altitude: parseFloat(t[1]),
+            };
+          });
+
+        const height = maxY - minY + 1;
+        const width = maxX - minX + 1;
+        const offset = startX + startY * width;
+
+        const vertices = [];
+        let index = 0;
+        let cursor = 0;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            if (x + y * width < offset) {
+              vertices.push(null);
+            } else {
+              const p = data[cursor];
+              cursor++;
+              if (p.type === "データなし") {
+                vertices.push(null);
+              } else {
+                let z = p.altitude < -1000 ? 0 : p.altitude;
+                vertices.push({
+                  element: `<vertex x="${x}" y="${-y}" z="${z}"/>`,
+                  index: index,
+                  type: p.type,
+                });
+                index++;
+              }
+            }
+          }
+        }
+
+        console.log(`Triangles を準備します`);
+
+        const triangles = [];
+        for (let y = 0; y < height - 1; y++) {
+          for (let x = 0; x < width - 1; x++) {
+            const tl = vertices[x + 0 + (y + 0) * width];
+            const tr = vertices[x + 1 + (y + 0) * width];
+            const bl = vertices[x + 0 + (y + 1) * width];
+            const br = vertices[x + 1 + (y + 1) * width];
+            for (const t of [
+              [tl, tr, bl],
+              [br, bl, tr],
+            ]) {
+              if (t[0] && t[1] && t[2]) {
+                const color = [
+                  "地表面",
+                  "表層面",
+                  "海水面",
+                  "内水面",
+                  "海水底面",
+                  "内水底面",
+                  "データなし",
+                  "その他",
+                ].indexOf(t[0].type);
+                triangles.push(
+                  `<triangle v1="${t[0].index}" v2="${t[1].index}" v3="${t[2].index}" pid="2" p1="${color}" />`
+                );
+              }
+            }
+          }
+        }
+
+        console.log(`Triangles の準備が完了しました`);
+
+        const t1 = new Date().getTime();
+
+        const zipped = fflate.zipSync(
+          {
+            "_rels/.rels": fflate.strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+            <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
+            </Relationships>`),
+            "[Content_Types].xml": fflate.strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+              <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+            </Types>`),
+            "3D/3dmodel.model": fflate.strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+                  <model unit="millimeter" xml:lang="en-US" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+                    <metadata name="Copyright">Copyright (c) 2015 3MF Consortium. All rights reserved.</metadata>
+                    <resources>
+                      <m:colorgroup id="2">
+                        <m:color color="#FF8000FF" />
+                        <m:color color="#008000FF" />
+                        <m:color color="#000080FF" />
+                        <m:color color="#8080FFFF" />
+                        <m:color color="#404080FF" />
+                        <m:color color="#C0C0FFFF" />
+                        <m:color color="#FF0000" />
+                        <m:color color="#808080" />
+                      </m:colorgroup>
+                      <object id="1" type="model">
+                        <mesh>
+                          <vertices>${vertices
+                            .filter((a) => a !== null)
+                            .map((a) => a.element)
+                            .join("")}</vertices>
+                          <triangles>${triangles.join("")}</triangles>
+                        </mesh>
+                      </object>
+                    </resources>
+                    <build>
+                      <item objectid="1" />
+                    </build>
+                  </model>
+                  `),
+          },
+          { level: 9 }
+        );
+
+        const t2 = new Date().getTime();
+
+        console.log(`zip の所要時間は ${t2 - t1} [msec] です`);
+
+        saveAs(new Blob([zipped], { type: "application/octet-stream" }), filename);
+      }
+      document.getElementById("target").addEventListener("change", function (event) {
+        const file = event.target.files[0];
+        console.log(`${file.name} が選択されました`, true);
+        const reader = new FileReader();
+        reader.onload = function () {
+          console.log(`${file.name} (長さ: ${reader.result.length}) がロードされました`);
+          const dst = file.name.replace(".xml", ".3mf");
+          gml_to_3mf(reader.result, dst);
+        };
+        reader.readAsText(file);
+      });
+    </script>
+  </body>
+</html>
